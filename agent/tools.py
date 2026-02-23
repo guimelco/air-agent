@@ -77,24 +77,56 @@ def assess_device_health(device_health: dict) -> dict:
     return health
 
 def get_air_quality_report(include_raw_metrics: bool = True) -> dict:
-    """
-    Tool: Returns a complete air quality report including metrics, AQI and device health.
-    """
+    if isinstance(include_raw_metrics, str):
+        include_raw_metrics = include_raw_metrics.lower() == "true"
+
     data = get_current_metrics()
     if data["status"] == "error":
         return data
-    
+
     aqi = assess_aqi(data["environmental"])
     health = assess_device_health(data["device_health"])
-    
-    return {
+
+    report = {
         "timestamp": data["timestamp"],
         "aqi": aqi,
         "device_health": health,
-        "environmental_metrics": data["environmental"],
         "samples_fetched": data["samples_fetched"]
     }
 
+    if include_raw_metrics:
+        # Include full metrics with variance, min, max for anomaly analysis
+        report["environmental_metrics"] = data["environmental"]
+        
+        # Flag sensors with high variance or significant min/max spread
+        anomalies = []
+        for sensor in data["environmental"]:
+            spread = sensor["max"] - sensor["min"]
+            variance = sensor["variance"]
+            mean = sensor["mean"]
+            
+            if mean > 0 and spread / mean > 0.5:
+                anomalies.append({
+                    "sensor": sensor["sensor_id"],
+                    "mean": mean,
+                    "min": sensor["min"],
+                    "max": sensor["max"],
+                    "variance": variance,
+                    "spread_pct": round(spread / mean * 100, 1),
+                    "flag": "high_spread"
+                })
+            elif variance > mean * 0.3 and mean > 0:
+                anomalies.append({
+                    "sensor": sensor["sensor_id"],
+                    "mean": mean,
+                    "variance": variance,
+                    "flag": "high_variance"
+                })
+
+        report["anomalies"] = anomalies
+
+    return report
+    
 # Tool definitions for the agent (Anthropic tool use format)
 TOOLS = [
     {
