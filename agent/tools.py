@@ -76,6 +76,24 @@ def assess_device_health(device_health: dict) -> dict:
 
     return health
 
+def get_air_quality_report(include_raw_metrics: bool = True) -> dict:
+    """
+    Tool: Returns a complete air quality report including metrics, AQI and device health.
+    """
+    data = get_current_metrics()
+    if data["status"] == "error":
+        return data
+    
+    aqi = assess_aqi(data["environmental"])
+    health = assess_device_health(data["device_health"])
+    
+    return {
+        "timestamp": data["timestamp"],
+        "aqi": aqi,
+        "device_health": health,
+        "environmental_metrics": data["environmental"],
+        "samples_fetched": data["samples_fetched"]
+    }
 
 # Tool definitions for the agent (Anthropic tool use format)
 TOOLS = [
