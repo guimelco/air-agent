@@ -4,38 +4,29 @@ import sys
 sys.path.append('/home/ghost/air-agent/ingestor')
 
 from client import fetch_last_hour
-from metrics import compute_hourly_metrics, split_metrics
-
+from metrics import compute_hourly_metrics, get_device_snapshot
 
 def run_pipeline() -> dict:
-    """
-    Orchestrates the full data pipeline:
-    1. Fetch last hour readings from API
-    2. Compute hourly metrics
-    3. Split into environmental and device health metrics
-    4. Return structured summary ready for the agent
-    """
     timestamp = datetime.now(timezone.utc).isoformat()
 
-    # Step 1: Fetch
     df = fetch_last_hour()
     if df.empty:
         return {"status": "error", "message": "No data fetched", "timestamp": timestamp}
 
-    # Step 2: Compute metrics
-    metrics = compute_hourly_metrics(df)
+    # Environmental metrics
+    env_df = df[~df["sensor_id"].isin(["battery_voltage", "battery_soc", "internal_temp", "failure_code"])]
+    env_metrics = compute_hourly_metrics(env_df)
 
-    # Step 3: Split
-    env_metrics, device_metrics = split_metrics(metrics)
+    # Device health snapshot
+    device_snapshot = get_device_snapshot(df)
 
-    # Step 4: Structure output for agent
     summary = {
         "status": "ok",
         "timestamp": timestamp,
         "samples_fetched": len(df),
         "unique_timestamps": df["time"].nunique(),
         "environmental": env_metrics.to_dict(orient="records"),
-        "device_health": device_metrics.to_dict(orient="records")
+        "device_health": device_snapshot
     }
 
     return summary

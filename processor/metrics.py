@@ -29,13 +29,36 @@ def compute_hourly_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return metrics
 
 
-def split_metrics(metrics: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def get_device_snapshot(df: pd.DataFrame) -> dict:
     """
-    Splits metrics into environmental sensors and device health sensors.
+    Returns a snapshot of device health sensors using appropriate aggregations.
+    - failure_code: max (any failure matters)
+    - battery_voltage, battery_soc: last value (most recent is representative)
+    - internal_temp: max (peak temperature is what matters)
     """
-    env = metrics[metrics["sensor_id"].isin(SENSORS)]
-    device = metrics[metrics["sensor_id"].isin(DEVICE_SENSORS)]
-    return env, device
+    if df.empty:
+        return {}
+
+    device_df = df[df["sensor_id"].isin(DEVICE_SENSORS)]
+
+    if device_df.empty:
+        return {}
+
+    result = {}
+
+    for sensor in DEVICE_SENSORS:
+        sensor_df = device_df[device_df["sensor_id"] == sensor]
+        if sensor_df.empty:
+            continue
+
+        if sensor == "failure_code":
+            result[sensor] = int(sensor_df["value"].max())
+        elif sensor == "internal_temp":
+            result[sensor] = round(sensor_df["value"].max(), 4)
+        else:  # battery_voltage, battery_soc
+            result[sensor] = round(sensor_df.sort_values("time").iloc[-1]["value"], 4)
+
+    return result
 
 
 if __name__ == "__main__":
