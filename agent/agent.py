@@ -15,41 +15,62 @@ sys.path.append('/home/ghost/air-agent/processor')
 sys.path.append('/home/ghost/air-agent/agent')
 sys.path.append('/home/ghost/air-agent/notifier')
 
-from tools import get_current_metrics, assess_aqi, assess_device_health, get_air_quality_report
+from tools import get_sensor_report, TOOLS
 
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 SYSTEM_PROMPT = """
-You are an air quality monitoring agent analyzing data from a low-cost sensor station.
+Eres un agente inteligente de monitoreo para estaciones de sensores. Tu trabajo es analizar 
+datos de sensores y proporcionar evaluaciones claras, estructuradas y perspicaces.
 
-When analyzing data:
-- Report AQI levels clearly (Good, Moderate, Unhealthy) based on WHO guidelines
-- Flag device health warnings immediately
-- If anomalies are present, analyze what could explain the spread or variance:
-  * High spread in PM sensors could indicate a passing pollution event
-  * High variance in gases could indicate intermittent emission source
-  * Correlate anomalies across sensors (e.g. PM + O3 spike together suggests traffic or fire)
-- Be concise but analytical — explain the WHY not just the WHAT
+Recibes métricas estadísticas crudas (mean, min, max, variance, samples) por sensor.
+Tú eres responsable de interpretar estos datos — no se proporcionan índices pre-calculados.
 
-When to use include_raw_metrics=True:
-- User asks for detailed analysis
-- Routine hourly check (always include for automated reports)
+ESTRUCTURA DEL REPORTE - organiza siempre tu respuesta en secciones:
 
-When to use include_raw_metrics=False:
-- User asks for a quick summary only
+1. MATERIAL PARTICULADO (pm1, pm25, pm4, pm10)
+   - Evalúa los niveles promedio, minimos y maximos(PM2.5 <50 Bueno, 50-100 Regular, 101-150 Mala, 151-200 Muy Mala, >200 Extremadamente mala)
+   - Marca alta varianza o dispersión (max-min > 50% del mean) como posibles eventos transitorios
+   - Nota tendencias entre tamaños de partículas
+
+2. CONDICIONES AMBIENTALES (temperature, humidity)
+   - Reporta condiciones actuales
+   - Infiere contexto: efectos de hora del día, condiciones climáticas, patrones estacionales
+
+3. ESTADO DEL DISPOSITIVO (battery_voltage, failure_code, internal_temp)
+   - Rango de batería: <3.5V (crítico), 3.5V-5V (Normal), >4.2V (completo)
+   - Cualquier failure_code > 0 debe marcarse inmediatamente
+   - Temperatura interna > 35°C es crítica
+
+LINEAMIENTOS DE ANÁLISIS:
+- Compara entre módulos para encontrar correlaciones (ej. PM alto + O3 alto sugiere tráfico o incendio)
+- Si la varianza es alta, sugiere posibles causas (tráfico, actividad industrial, eventos climáticos)
+- Usa temperatura y humedad para dar contexto ambiental
+- Sé analítico, no solo descriptivo — explica el POR QUÉ no solo el QUÉ
+- Si los datos parecen anómalos, dilo claramente
+
+Cuándo activar módulos específicos:
+- Reporte horario rutinario: todos los módulos
+- Usuario pregunta sobre calidad del aire: particle + chemical
+- Usuario pregunta sobre el dispositivo: device únicamente
+- Usuario pregunta sobre condiciones climáticas: environmental únicamente
 """
 TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "get_air_quality_report",
-            "description": "Fetches current air quality metrics, calculates AQI, and evaluates device health. Returns a complete report of the station status.",
+            "name": "get_sensor_report",
+            "description": "Obtiene datos sintetizados de los sensores de la estación por módulo. Retorna métricas estadísticas crudas (mean, min, max, variance, samples) para interpretación del agente. No incluye índices pre-calculados.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "include_raw_metrics": {
-                        "type": "boolean",
-                        "description": "Whether to include raw sensor metrics in the report. Default is true."
+                    "modules": {
+                        "type": "array",
+                        "description": "Lista de módulos a incluir. Opciones: 'particle' (pm1, pm25, pm4, pm10), 'environmental' (temperature, humidity), 'chemical' (o3, no2, so2), 'device' (batería, código de falla, temp interna). Si no se especifica, retorna todos.",
+                        "items": {
+                            "type": "string",
+                            "enum": ["particle", "environmental", "chemical", "device"]
+                        }
                     }
                 },
                 "required": []
@@ -59,13 +80,13 @@ TOOLS = [
 ]
 
 TOOL_MAP = {
-    "get_air_quality_report": get_air_quality_report
+    "get_sensor_report": get_sensor_report
 }
-
 
 def run_agent(user_message: str) -> str:
     start_time = time.time()
     tools_called = []
+    tool_results = []
     error = None
     response_text = None
 
@@ -115,6 +136,10 @@ def run_agent(user_message: str) -> str:
                     tools_called.append({"tool": fn_name, "args": fn_args})
 
                     result = TOOL_MAP[fn_name](**fn_args)
+                    tool_results.append({
+                        "tool": fn_name,
+                        "result": result
+                    })
 
                     messages.append({
                         "role": "tool",
@@ -131,13 +156,10 @@ def run_agent(user_message: str) -> str:
         log_interaction(
             user_message=user_message,
             tools_called=tools_called,
+            tool_results=tool_results,
             agent_response=response_text,
             latency_ms=latency_ms,
             error=error
         )
 
     return response_text
-                
-if __name__ == "__main__":
-    response = run_agent("What is the current air quality status?")
-    print(response)
