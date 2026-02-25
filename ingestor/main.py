@@ -10,7 +10,7 @@ from agent import run_agent
 if __name__ == "__main__":
     print("[scheduler] Running hourly air quality check...")
     try:
-        response = run_agent("Run the hourly air quality report. Include raw metrics for anomaly analysis.")
+        response = run_agent("Ejecuta un reporte general de la estación de monitoreo.")
         preview = response[:100] if response else "No response"
         print("[scheduler] Done: " + preview)
     except Exception as e:
