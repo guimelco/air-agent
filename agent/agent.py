@@ -7,6 +7,7 @@ from groq import Groq
 from dotenv import load_dotenv
 from telegram import send_message
 from eval_logger import log_interaction
+from openai import OpenAI
 
 load_dotenv('/home/ghost/air-agent/.env')
 
@@ -14,37 +15,39 @@ sys.path.append('/home/ghost/air-agent/ingestor')
 sys.path.append('/home/ghost/air-agent/processor')
 sys.path.append('/home/ghost/air-agent/agent')
 sys.path.append('/home/ghost/air-agent/notifier')
+sys.path.append('/home/ghost/air-agent/db')
 
-from tools import get_sensor_report, TOOLS
+from tools import get_sensor_report, get_historical_context, save_relevant_event, TOOLS
 
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.getenv("OPENROUTER_API_KEY")
+)
 
 SYSTEM_PROMPT = """
 Eres un agente inteligente de monitoreo para estaciones de sensores. Tu trabajo es analizar 
-datos de sensores y proporcionar evaluaciones claras, estructuradas y perspicaces.
-
-Recibes métricas estadísticas crudas (mean, min, max, variance, samples) por sensor.
-Tú eres responsable de interpretar estos datos — no se proporcionan índices pre-calculados.
+datos de sensores y proporcionar evaluaciones claras, estructuradas y perspicaces usando las herramientas.
 
 ESTRUCTURA DEL REPORTE - organiza siempre tu respuesta en secciones:
 
-1. MATERIAL PARTICULADO (enfasis en pm25)
-   - Evalúa los niveles promedio, minimos y maximos(PM2.5 <50 Bueno, 50-100 Regular, 101-150 Mala, 151-200 Muy Mala, >200 Extremadamente mala)
-   - Correlaciona el nivel de varianza como posibles eventos transitorios
-   - Nota tendencias entre tamaños los otros de partículas
-
+1. MATERIAL PARTICULADO
+   - Genera un reporte en base a la informacion obtenida de la herramienta "get_sensor_report".
+   - Reporta y almacena eventos relevantes, analizando los ya existentes antes en "get_historical_context".
+       - Criterios para considerar un evento: de "get_sensor_report", valor maximo > 2*mean y/o mean > 50ug/m3
+       
 2. CONDICIONES AMBIENTALES (temperature, humidity)
-   - Analiza las condiciones climaticas en base a las lecturas de humedad y temperatura
-   
-3. ESTADO DEL DISPOSITIVO (battery_voltage, failure_code, internal_temp)
-   - Rango de batería: <3.5V (crítico), 3.5V-5V (Normal), >4.2V (completo)
-   - Cualquier failure_code > 0 debe marcarse inmediatamente
-   - Temperatura interna > 35°C es crítica
+   - Genera un reporte en base a la informacion obtenida de la herramienta "get_sensor_report".
 
-LINEAMIENTOS DE ANÁLISIS:
-- Si la varianza es alta, sugiere posibles causas (tráfico, actividad industrial, eventos climáticos)
-- Usa temperatura y humedad para dar contexto ambiental
-- Si los datos parecen anómalos, dilo claramente
+
+USO DE HERRAMIENTAS:
+
+1. get_sensor_report, herramienta que te retorna metricas del analisis de la ultima hora.
+    - Tu debes interpretar la informacion en base a las etiquetas.
+2. save_relevant_event, herramienta que sirve para registrar informacion de un evento relevante.
+    - Tu debes proporcionar la informacion disponible de "get_sensor_report"
+3. get_historical_context, herramienta que te permite ver los eventos anteriores para comparar eventos nuevos.
+    - Esto te permite identificar patrones repetidos y analizar tendencias
 
 Formato de respuesta: texto plano, sin asteriscos, sin markdown, sin bullets con *.
 Usa números para las secciones y guiones simples para listas.
@@ -71,11 +74,65 @@ TOOLS = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_historical_context",
+            "description": "Consulta eventos históricos relevantes para la misma hora y día de semana. Úsala después de get_sensor_report para identificar si el evento actual es un patrón recurrente o algo atípico.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "hour": {
+                    "type": "integer",
+                    "description": "Hora del día en formato 24h (0-23)"
+                    },
+                    "day_of_week": {
+                    "type": "string",
+                    "description": "Día de la semana en inglés: Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday"
+                    }
+                },
+                "required": ["hour", "day_of_week"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_relevant_event",
+            "description": "Guarda un evento relevante en la base de datos histórica. Llama esta tool cuando detectes valores atípicos, picos significativos, patrones inusuales o cualquier condición que merezca registro para análisis futuro.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "trigger": {
+                        "type": "string",
+                        "description": "Causa del evento. Ej: pm25_spike, pm10_mean_high, temperature_anomaly, correlacion_pm_gases"
+                    },
+                    "pattern_match": {
+                        "type": "string",
+                        "description": "Clasificación temporal. Opciones: morning_peak, evening_peak, nocturnal, daytime, weekend, atypical"
+                    },
+                    "agent_notes": {
+                        "type": "string",
+                        "description": "Interpretación del agente sobre el evento — qué detectó y por qué es relevante"
+                    },
+                    "pm25_mean": {"type": "number"},
+                    "pm25_max": {"type": "number"},
+                    "pm10_mean": {"type": "number"},
+                    "pm10_max": {"type": "number"},
+                    "temperature": {"type": "number"},
+                    "humidity": {"type": "number"}
+                },
+                "required": ["trigger", "pattern_match", "agent_notes"]
+            }
+        }
     }
 ]
 
 TOOL_MAP = {
-    "get_sensor_report": get_sensor_report
+    "get_sensor_report": get_sensor_report,
+    "get_historical_context": get_historical_context,
+    "save_relevant_event": save_relevant_event
 }
 
 def run_agent(user_message: str) -> str:
@@ -93,7 +150,7 @@ def run_agent(user_message: str) -> str:
 
         while True:
             response = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="arcee-ai/trinity-large-preview:free",
                 messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",

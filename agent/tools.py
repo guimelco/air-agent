@@ -99,7 +99,69 @@ def get_sensor_report(modules: list = None) -> dict:
 
     return report
 
+def get_historical_context(hour: int, day_of_week: str) -> dict:
+    """
+    Tool: Retrieves historical events for the same hour and day of week.
+    Used to identify recurring patterns.
+    """
+    import sys
+    sys.path.append('/home/ghost/air-agent/db')
+    from database import get_similar_events, get_baseline
+    
+    events = get_similar_events(hour=hour, day_of_week=day_of_week)
+    
+    particle_sensors = ["pm25", "pm10"]
+    baselines = {}
+    for sensor in particle_sensors:
+        baseline = get_baseline(day_of_week=day_of_week, hour=hour, sensor_id=sensor)
+        if baseline:
+            baselines[sensor] = baseline
+    
+    return {
+        "similar_events": events,
+        "baselines": baselines,
+        "events_found": len(events)
+    }
 
+def save_relevant_event(
+    trigger: str,
+    pattern_match: str,
+    agent_notes: str,
+    pm25_mean: float = None,
+    pm25_max: float = None,
+    pm10_mean: float = None,
+    pm10_max: float = None,
+    temperature: float = None,
+    humidity: float = None
+) -> dict:
+    """
+    Guarda un evento relevante en la base de datos.
+    El agente decide cuándo llamar esta tool basándose en su análisis.
+    """
+    import sys
+    sys.path.append('/home/ghost/air-agent/db')
+    from database import save_event
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+
+    event_id = save_event(
+        timestamp=now.isoformat(),
+        day_of_week=now.strftime("%A"),
+        hour=now.hour,
+        trigger=trigger,
+        pm25_mean=pm25_mean,
+        pm25_max=pm25_max,
+        pm10_mean=pm10_mean,
+        pm10_max=pm10_max,
+        temperature=temperature,
+        humidity=humidity,
+        pattern_match=pattern_match,
+        agent_notes=agent_notes
+    )
+
+    return {"status": "ok", "event_id": event_id}
+    
 # Tool definitions for the agent
 TOOLS = [
     {
